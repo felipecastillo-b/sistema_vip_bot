@@ -2,7 +2,7 @@ import discord
 import sqlite3
 import os
 from datetime import datetime
-from discord.ext import commands
+from discord.ext import commands, tasks
 from dotenv import load_dotenv
 
 # Carga las variables de entorno desde el archivo .env
@@ -18,6 +18,8 @@ cursor.execute('''
 CREATE TABLE IF NOT EXISTS vip_users (
     id INTEGER PRIMARY KEY,
     tipo_vip TEXT,
+    mecanico INTEGER DEFAULT 1,
+    estetico INTEGER DEFAULT 1,
     fecha_ingreso TEXT,
     fecha_modificacion TEXT
 )
@@ -32,13 +34,14 @@ bot = commands.Bot(command_prefix='!', intents=intents)
 @bot.event
 async def on_ready():
     print(f'Bot conectado como {bot.user}')
+    reset_mecanico_estetico.start() # Inicia la tarea programada al iniciar el bot
 
-# Comando para insertar un nuevo ID con el tipo de VIP
+# Comando para insertar un nuevo ID con el tipo de VIP opcional
 @bot.command(name='ingresar')
-async def insertar(ctx, id: int, tipo_vip: str):
-    # Validar tipo de VIP
-    if tipo_vip.lower() not in ["bronce", "plata", "oro", "platino"]:
-        await ctx.send(f"Tipo de VIP inválido: {tipo_vip}. Debe ser 'bronce', 'plata', 'oro' o 'platino'.")
+async def insertar(ctx, id: int, tipo_vip: str = ''):
+    # Validar tipo de VIP | se quito porque ya no era necesario
+    if tipo_vip.lower() not in ["rex", "obsidian", "ems", "otro"]:
+        await ctx.send(f"Tipo de VIP inválido: {tipo_vip}. Debe ser 'rex', 'obsidian', 'ems' o 'otro'.")
         return
 
     # Obtener la fecha actual
@@ -60,8 +63,8 @@ async def insertar(ctx, id: int, tipo_vip: str):
 @bot.command(name='editar')
 async def editar(ctx, id: int, nuevo_tipo_vip: str):
     # Validar tipo de VIP
-    if nuevo_tipo_vip.lower() not in ["bronce", "plata", "oro", "platino"]:
-        await ctx.send(f"Tipo de VIP inválido: {nuevo_tipo_vip}. Debe ser 'bronce', 'plata', 'oro' o 'platino'.")
+    if nuevo_tipo_vip.lower() not in ["rex", "obsidian", "ems", "otro"]:
+        await ctx.send(f"Tipo de VIP inválido: {nuevo_tipo_vip}. Debe ser 'rex', 'obsidian', 'ems' o 'otro'.")
         return
 
     # Verifica si el ID existe
@@ -99,10 +102,12 @@ async def listar(ctx):
     if rows:
         message = '**Lista de usuarios VIP:**\n'
         for row in rows:
-            message += f'ID: {row[0]}, Tipo de VIP: {row[1]}, Ingreso: {row[2]}, Modificado: {row[3]}\n'
+            message += f'ID: {row[0]}, Tipo de VIP: {row[1]}, Mecanico: {row[2]}, Estetico {row[3]}, Ingreso: {row[4]}, Modificado: {row[5]}\n'
         await ctx.send(message)
     else:
         await ctx.send('No hay usuarios VIP en la base de datos.')
+
+
 
 # Comando para obtener el tipo de VIP de un ID específico usando el prefix "!"
 @bot.event
@@ -111,21 +116,54 @@ async def on_message(message):
     if message.author == bot.user:
         return
 
-    # Verifica si el mensaje comienza con "!" seguido de un numero/ID
-    if message.content.startswith('!') and message.content[1:].isdigit():
-        id = int(message.content[1:])
-        
-        # Consulta el ID en la base de datos
-        cursor.execute('SELECT tipo_vip, fecha_ingreso, fecha_modificacion FROM vip_users WHERE id = ?', (id,))
-        row = cursor.fetchone()
-        
-        if row:
-            await message.channel.send(f'ID {id} tiene tipo de VIP: {row[0]}, Ingreso: {row[1]}, Modificado: {row[2]}')
-        else:
-            await message.channel.send(f'No se encontró usuario VIP con ID {id}')
+    #  Verifica si el mensaje comienza con "!" seguido de un numero/ID
+    if message.content.startswith('!'):
+        parts = message.content[1:].split()
+
+        if parts[0].isdigit():
+            id = int(parts[0])
+            
+            # Si tiene dos partes y la segunda es 'mecanico' o 'estetico'
+            if len(parts) > 1 and parts[1].lower() in ["mecanico", "estetico"]:
+                tipo = parts[1].lower()
+
+                # Consulta el ID en la base de datos
+                cursor.execute(f'SELECT {tipo} FROM vip_users WHERE id = ?', (id,))
+                row = cursor.fetchone()
+
+                if row is not None:
+                    # Setea el valor a 0 y actualiza la fecha de modificación
+                    fecha_actual = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    cursor.execute(f'UPDATE vip_users SET {tipo} = 0, fecha_modificacion = ? WHERE id = ?', 
+                                (fecha_actual, id))
+                    conn.commit()
+                    await message.channel.send(f'Tuneo {tipo.capitalize()} actualizado a 0 para ID {id}')
+                else:
+                    await message.channel.send(f'No se encontró usuario VIP con ID {id}')
+            else:
+                # Si no se menciona 'mecanico' o 'estetico', muestra el tipo de VIP
+                cursor.execute('SELECT mecanico, estetico FROM vip_users WHERE id = ?', (id,))
+                row = cursor.fetchone()
+                
+                if row:
+                    await message.channel.send(f'ID {id} tiene Descuento Mecanico: {row[0]}, Descuento Estetico: {row[1]}')
+                else:
+                    await message.channel.send(f'No se encontró usuario VIP con ID {id}')
     
     # Procesar otros comandos
     await bot.process_commands(message)
+
+# Tarea programada para resetear mecanico y estetico a 1 cada Lunes a las 20:00 (si afecta el rendimiento cambiar a solo Lunes)
+@tasks.loop(minutes=10) # Verifica cada 10 minutos (ver rendimiento)
+async def reset_mecanico_estetico():
+    # Obtener la fecha actual del sistema
+    now = datetime.now()
+
+    # Verifica si es Lunes y las 20:00 (Tormenta en HispanoRP)
+    if now.weekday() == 0 and now.hour == 20:
+        cursor.execute('UPDATE vip_users SET mecanico = 1, estetico = 1')
+        conn.commit()
+        print('Valores de mecanico y estetico reseteados a 1 para todos los usuarios')
 
 # Ejecuta el bot
 bot.run(TOKEN)
